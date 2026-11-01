@@ -71,7 +71,7 @@ export default class BackGroundAbility extends UIAbility {
       this.wireEvents();
       return;
     }
-    this.applyWant(want);
+    this.loadTogglesThenWant(want);
     this.wireEvents();
     this.watchBeacon();
   }
@@ -88,7 +88,32 @@ export default class BackGroundAbility extends UIAbility {
       hilog.info(DOMAIN, TAG, 'onNewWant without host, ignored');
       return;
     }
-    this.applyWant(want);
+    this.loadTogglesThenWant(want);
+  }
+
+  /**
+   * 代拉脚本（`aa start --ps host ...`）只推 host/port，不带 invert/clipboard。
+   * 修复前这里直接把这两个字段留在默认值 false 上，而 doConnect 会无条件
+   * `setClipboardSync(this.curClipboard)` —— 于是用户明明开着剪贴板同步，
+   * 开机被代拉一次就关掉了，之后 DCLP 全被丢弃（hilog 只见 `ignored (sync=0)`）。
+   * 所以先把偏好里的开关读回来，再应用 want 里的覆盖值。
+   */
+  private loadTogglesThenWant(want: Want): void {
+    try {
+      preferences.getPreferences(this.context, 'deskflow_config').then((pref: preferences.Preferences) => {
+        this.curInvert = pref.getSync('invert_scroll', this.curInvert) as boolean;
+        this.curClipboard = pref.getSync('clipboard_sync', this.curClipboard) as boolean;
+        hilog.info(DOMAIN, TAG, 'toggles from prefs invert=%{public}d clipboard=%{public}d',
+          this.curInvert ? 1 : 0, this.curClipboard ? 1 : 0);
+        this.applyWant(want);
+      }).catch((e: BusinessError) => {
+        hilog.error(DOMAIN, TAG, 'read toggles fail: %{public}s', JSON.stringify(e));
+        this.applyWant(want);
+      });
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'read toggles throw: %{public}s', JSON.stringify(e));
+      this.applyWant(want);
+    }
   }
 
   /** 从 want 取参数并真正发起连接 / 回写配置 */
@@ -164,8 +189,17 @@ export default class BackGroundAbility extends UIAbility {
                     autoReconnect: boolean, attempt: number): void {
     try {
       const d = display.getDefaultDisplaySync();
-      const w = Math.round(d.width);
-      const h = Math.round(d.height);
+      // display 上报的 width/height 是物理像素（px），而 OH_Input_InjectMouseEventGlobal
+      // 的坐标空间是 vp（逻辑像素）。必须除以 densityPixels 换算，否则 3120x2080 的 px
+      // 被当成 vp 上报给服务端，注入坐标全部越界（vp 实际只有 1642x1095），
+      // 表现为「键盘注入有效、鼠标注入无效且无任何失败日志」。
+      const vpW = Math.round(d.width / d.densityPixels);
+      const vpH = Math.round(d.height / d.densityPixels);
+      hilog.info(DOMAIN, TAG, 'display: px=%{public}d x %{public}d density=%{public}d -> vp=%{public}d x %{public}d',
+        Math.round(d.width), Math.round(d.height),
+        Math.round(d.densityPixels * 1000), vpW, vpH);
+      const w = vpW;
+      const h = vpH;
       deskflow.setAutoReconnect(autoReconnect);
       deskflow.setInvertScroll(this.curInvert);
       deskflow.setClipboardSync(this.curClipboard);

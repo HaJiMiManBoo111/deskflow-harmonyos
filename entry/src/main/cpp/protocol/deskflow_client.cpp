@@ -925,27 +925,66 @@ bool DeskflowClient::recoverInjectionPermission()
     // 注入失败 201（INPUT_PERMISSION_DENIED）时调用：
     // CancelInjection 会撤销授权并把系统状态从 AUTHORIZING/AUTHORIZED 复位成 UNAUTHORIZED，
     // 之后再 Requery+Request 才能重新弹出授权框（否则一直卡在「授权中」且注入全 201）。
-    // 限流：两次自愈间隔至少 5s，总共最多 8 次，避免刷屏式反复弹窗。
+    // 限流：两次自愈间隔至少 10s，总共最多 20 次。间隔太短会被系统判成
+    // 重复请求（3900006），越救越糟。
     const int64_t now = static_cast<int64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
     const int64_t last = m_permRecoverLastMs.load();
-    if (last != 0 && now - last < 5000) {
+    if (last != 0 && now - last < 10000) {
         return false;
     }
-    if (m_permRecoverCount.load() >= 8) {
+    if (m_permRecoverCount.load() >= 20) {
         return false;
     }
     m_permRecoverLastMs.store(now);
     m_permRecoverCount.fetch_add(1);
     DF_LOGW("injection denied(201), recovering permission (attempt %{public}d)",
         m_permRecoverCount.load());
-    OH_Input_CancelInjection();
+    // 先查当前状态再决定要不要 Cancel。CancelInjection 会把已有授权彻底撤销，
+    // 撤了之后再 Request 会被系统判成「重复请求」返回 3900006（OPERATION_FREQUENT），
+    // 而 3900006 期间注入一直是 201 —— 原实现正是这样把一次瞬时失败放大成永久失效。
     Input_InjectionStatus st = UNAUTHORIZED;
     Input_Result qr = OH_Input_QueryAuthorizedStatus(&st);
-    DF_LOGI("after cancel: queryRet=%{public}d status=%{public}d", qr, static_cast<int>(st));
+    DF_LOGI("recover: queryRet=%{public}d status=%{public}d", qr, static_cast<int>(st));
+    if (qr == INPUT_SUCCESS && st == AUTHORIZED) {
+        // 系统说已授权却仍 201：说明授权挂在别的会话/进程上，
+        // 此时撤销重申请没有意义（反而会掉到 3900006），直接等下一轮。
+        DF_LOGW("recover: status=AUTHORIZED but inject denied, skip cancel/request");
+        return false;
+    }
+    if (qr == INPUT_SUCCESS && st == AUTHORIZING) {
+        // AUTHORIZING 有两种：① 授权框真的在屏上等用户点（此时 Cancel 会关掉框，必须等）；
+        // ② 系统侧残留的假 AUTHORIZING（框根本没弹出来，等多久都不会有回调）。
+        // 用时间区分：记下第一次看到 AUTHORIZING 的时刻，超过 8s 仍无回调就判定为 ②，
+        // 撤销复位后重新申请（这是唯一能把假 AUTHORIZING 解开的手段）。
+        if (m_authPendingSinceMs.load() == 0) {
+            m_authPendingSinceMs.store(now);
+            DF_LOGW("recover: status=AUTHORIZING, start waiting (no cancel yet)");
+            return false;
+        }
+        const int64_t waited = now - m_authPendingSinceMs.load();
+        if (waited < 8000) {
+            DF_LOGW("recover: status=AUTHORIZING, waited %{public}lldms, keep waiting",
+                static_cast<long long>(waited));
+            return false;
+        }
+        DF_LOGW("recover: AUTHORIZING stuck %{public}lldms with no callback, cancel and re-request",
+            static_cast<long long>(waited));
+        m_authPendingSinceMs.store(0);
+        // 落到下面的 Cancel + Request
+    }
+    OH_Input_CancelInjection();
+    Input_InjectionStatus st2 = UNAUTHORIZED;
+    OH_Input_QueryAuthorizedStatus(&st2);
     Input_Result rr = OH_Input_RequestInjection(OnInjectAuthCallback);
-    DF_LOGI("re-request injection auth after cancel, ret=%{public}d", rr);
+    DF_LOGI("re-request injection auth after cancel: prev=%{public}d now=%{public}d ret=%{public}d",
+        static_cast<int>(st), static_cast<int>(st2), rr);
+    if (rr == INPUT_INJECTION_OPERATION_FREQUENT) {
+        // 3900006：系统认为我们在刷请求。退避到下一轮，别再纠缠。
+        DF_LOGW("recover: request too frequent (3900006), backing off");
+        return false;
+    }
     return rr == INPUT_SUCCESS || rr == INPUT_INJECTION_AUTHORIZED;
 }
 
@@ -991,6 +1030,7 @@ bool DeskflowClient::injectMouseMove(int32_t x, int32_t y)
         // 注入正常：清空自愈计数，下次真出问题还能再救
         m_permRecoverCount.store(0);
         m_permRecoverLastMs.store(0);
+        m_authPendingSinceMs.store(0);
     }
     return ret == INPUT_SUCCESS;
 }

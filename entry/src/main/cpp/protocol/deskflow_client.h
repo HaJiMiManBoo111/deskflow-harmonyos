@@ -123,6 +123,9 @@ private:
     std::atomic<int32_t> m_pointerX{0};
     std::atomic<int32_t> m_pointerY{0};
     // 注入被拒(201)后的自愈次数与时间戳，防止刷屏反复重置授权
+    // 首次观察到 AUTHORIZING 的时间戳（ms）。用来区分「授权框真的在等用户」
+    // 与「系统侧残留的假 AUTHORIZING」——后者永远不会有回调，必须超时后强制复位。
+    std::atomic<int64_t> m_authPendingSinceMs{0};
     std::atomic<int32_t> m_permRecoverCount{0};
     std::atomic<int64_t> m_permRecoverLastMs{0};
     bool recoverInjectionPermission();
