@@ -1,0 +1,56 @@
+# ===== 依赖与构建产物 =====
+/node_modules
+/oh_modules
+/local.properties
+/.idea
+**/build
+/.hvigor
+.cxx
+/.clangd
+/.clang-format
+/.clang-tidy
+**/.test
+/.appanalyzer
+
+# ===== 签名与密钥：严禁上传 =====
+# DevEco 自动生成的签名材料（证书/profile/密钥库）存于用户主目录 ~/.ohos/config，
+# 但为双保险，这里显式忽略项目内可能出现的任何签名/密钥文件，以及记录密码的配置。
+*.p12
+*.p7b
+*.p7c
+*.cer
+*.crt
+*.jks
+*.keystore
+*.key
+*.pem
+*.sign.json
+*_release.json5
+signingConfigs/*
+
+# ===== build-profile.json5 的签名段 =====
+# 注意：.gitignore 无法忽略「文件内的某一段」。
+# DevEco 勾选自动签名后会把 signingConfigs（含本机绝对路径与密文密码）写回
+# build-profile.json5，而这个文件本身必须入库。
+# 仓库里的版本已**手工剥掉** signingConfigs 段；本地开发请执行一次：
+#     git update-index --skip-worktree build-profile.json5
+# 这样 DevEco 写回的签名段不会被提交。恢复跟踪：
+#     git update-index --no-skip-worktree build-profile.json5
+
+# 本地 DevEco 项目配置（含机器相关绝对路径，不共享）
+.idea/
+*.iml
+local.properties
+
+# ===== 补充显式条目（fork 新增）=====
+# 上面的通用规则（**/build、/.hvigor、.cxx、/oh_modules）已覆盖大部分情况，
+# 这里再按具体路径显式列出，避免编辑器/工具的默认排除逻辑不同导致漏网。
+entry/build/
+.hvigor/
+entry/oh_modules/
+oh_modules/
+.idea/
+*.hap
+entry/.preview/
+entry/.cxx/
+

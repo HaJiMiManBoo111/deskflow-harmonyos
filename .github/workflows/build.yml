@@ -1,0 +1,116 @@
+name: Build HAP
+
+# 本仓库是 cy745/deskflow-harmonyos 的衍生版本，遵循上游 GPL-2.0 许可。
+#
+# 目的：在 CI 上验证工程可编译（hvigorw assembleHap）。
+# 注意：CI 默认不持有任何签名证书，产物为 unsigned HAP；如需 signed HAP，
+# 请按下方 "Signing" 步骤配置 Secrets（CERT / PROFILE / KEYSTORE 等）。
+# unsigned HAP 无法安装到设备（hdc 会报 code:9568320），仅用于验证编译通过。
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: assembleHap
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect project
+        id: detect
+        run: |
+          set -euo pipefail
+          if [ -f hvigorfile.ts ] && [ -f build-profile.json5 ]; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # DevEco Studio 的完整发行包需要开发者账号登录，无法在公开 CI 上匿名下载。
+      # 可行做法：自建 runner（label: self-hosted, windows/linux, 已装 DevEco），
+      # 或在 Secrets 里放离线 SDK 归档并用 CACHE 复用。
+      - name: Setup HarmonyOS SDK (availability check)
+        id: sdk
+        env:
+          OHOS_SDK_URL: ${{ secrets.OHOS_SDK_URL }}
+          HDC_PATH: ${{ secrets.HDC_PATH }}
+        run: |
+          set -euo pipefail
+          if [ -n "${OHOS_SDK_URL:-}" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=SDK 未配置::未提供 OHOS_SDK_URL，跳过构建。请配置 SDK 或使用自建 runner。"
+          fi
+
+      - name: Download SDK archive
+        if: steps.sdk.outputs.available == 'true'
+        env:
+          OHOS_SDK_URL: ${{ secrets.OHOS_SDK_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/ohos-sdk"
+          curl -fsSL "$OHOS_SDK_URL" -o /tmp/ohos-sdk.tar.gz
+          tar -xzf /tmp/ohos-sdk.tar.gz -C "$HOME/ohos-sdk" --strip-components=1 || true
+          echo "OHOS_SDK_HOME=$HOME/ohos-sdk" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          if command -v ohpm >/dev/null 2>&1; then
+            ohpm install --all || ohpm install
+          else
+            echo "::warning title=ohpm 缺失::未找到 ohpm，跳过依赖安装"
+          fi
+
+      - name: Build HAP
+        if: steps.sdk.outputs.available == 'true' && steps.detect.outputs.found == 'true'
+        run: |
+          set -euo pipefail
+          if command -v hvigorw >/dev/null 2>&1; then
+            hvigorw --no-daemon assembleHap --mode module -p product=default
+          else
+            echo "::error title=hvigorw 缺失::未找到 hvigorw，请使用已安装 DevEco Studio 的 runner"
+            exit 1
+          fi
+
+      - name: List artifacts
+        if: steps.sdk.outputs.available == 'true'
+        run: |
+          find . -name "*.hap" -type f -print0 | xargs -0 -r ls -l
+
+      - name: Upload unsigned HAP
+        if: steps.sdk.outputs.available == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hap-unsigned
+          path: |
+            **/entry-default-unsigned.hap
+            **/entry-default-signed.hap
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Build HAP"
+            echo ""
+            echo "- 上游：cy745/deskflow-harmonyos（GPL-2.0）"
+            echo "- SDK 已配置：${{ steps.sdk.outputs.available }}"
+            echo "- 工程识别：${{ steps.detect.outputs.found }}"
+            echo ""
+            echo "> CI 产物未签名，安装需 signed HAP（见 docs/BUILD.md）。"
+          } >> "$GITHUB_STEP_SUMMARY"
