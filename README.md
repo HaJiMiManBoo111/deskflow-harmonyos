@@ -73,6 +73,8 @@
 
 ## 与 Windows 端配合使用
 
+> **要现成的安装包？** 到 [Releases](https://github.com/HaJiMiManBoo111/deskflow-harmonyos/releases) 下载 `deskflow-harmonyos-v0.1.0-unsigned.zip`。里面是**未签名**的 `.hap` + 签名安装说明（`START-HERE.txt`）。发未签名版是因为签名 hap 会嵌入打包者的证书与绑定设备 UDID 的调试 profile，既泄露他人设备标识又装不到你机器上 —— 用自己的证书签一次约一分钟。
+
 ### 1. 服务端（Windows）
 
 安装 **Deskflow 1.26**，确保服务端监听 TCP **24800**，协议为 **Barrier v1.8**。
