@@ -62,12 +62,17 @@ detailed change list is in [`CHANGELOG.md`](CHANGELOG.md) and
 
 ### Documented limitations
 
-No clipboard synchronization is provided. Reading the clipboard requires
+Clipboard support is **one-way: Windows → HarmonyOS, text only, automatic.** The
+Windows server pushes `DCLP` chunks after it receives `CINN`; the client
+reassembles them and writes the text into the HarmonyOS clipboard.
+
+HarmonyOS → Windows is **not** automatic. Reading the clipboard requires
 `ohos.permission.READ_PASTEBOARD`, which is `user_grant` with
 `available_level = system_basic` and cannot be obtained with a normal
 signature; declaring it in `module.json5` makes installation fail with
-`code:9568289`. HarmonyOS → Windows clipboard transfer would require the user to
-manually press the system `PasteButton`.
+`code:9568289`. That direction works only when the user manually presses the
+system `PasteButton` (temporary grant) to push the current clipboard. Images and
+files are not supported in either direction.
 
 Injection authorization dialogs cannot be shown while the device is locked. Only
 PC / 2in1 device forms are supported (other forms return `801` from the injection

@@ -59,10 +59,11 @@
 - 键盘：可打印字符、方向键、功能键、修饰键（Shift/Ctrl/Alt）
 - 双向边缘穿越（Windows 右缘 → 鸿蒙；鸿蒙左缘 → Windows）
 - 断线自动重连（3 秒间隔），以及本 fork 新增的换地址自愈与注入权限自愈
+- **文本剪贴板，单向：Windows → 鸿蒙自动生效**
 
 ### 限制（重要，请先读）
 
-- **不支持剪贴板同步。** 上游没有该功能；本仓库中原生层虽留有实验性的文本剪贴板通道，但**鸿蒙 → Windows 方向不可用**：读取剪贴板需要 `ohos.permission.READ_PASTEBOARD`，该权限为 `user_grant` 且 `available_level = system_basic`，**普通签名拿不到**；写进 `module.json5` 会导致安装失败 `code:9568289`。唯一可行路径是用户人工点击系统 `PasteButton`（临时授权）后手动推送。**不要把本仓库当作具备剪贴板同步的客户端使用。**
+- **剪贴板只通了单向。** Windows → 鸿蒙：服务端在收到 `CINN` 后主动下推 `DCLP`（分块 `mark=1 Start(ASCII 大小) → 2 Data → 3 End`），客户端拼装后写入鸿蒙剪贴板，**自动**。鸿蒙 → Windows：**不可自动**。读取鸿蒙剪贴板需要 `ohos.permission.READ_PASTEBOARD`，该权限是 `user_grant` 且 `available_level = system_basic`，**普通签名拿不到**；写进 `module.json5` 会导致安装失败 `code:9568289`。唯一可行路径是用户人工点一次系统 `PasteButton`（临时授权）才推送。只支持纯文本，图片与文件不支持。
 - **必须解锁屏幕。** 注入授权弹窗「允许使用您的屏幕？」在锁屏状态下**弹不出来**，锁屏时 hilog 只会看到状态卡在 `AUTHORIZING`。
 - **必须是 PC / 2in1 设备形态。** 全局注入接口在非 2in1 形态上返回 `801`。
 - **鸿蒙 6 / API 20+ 为最低要求**；本仓库实测于 API 26。

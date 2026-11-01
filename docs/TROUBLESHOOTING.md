@@ -15,8 +15,9 @@
 
 **当前状态**
 - 早期曾因该崩溃把服务端 `clipboardSharing=false` 关闭（`C:\Users\<user>\deskflow-server.conf`，即 `Deskflow.conf` 里 `externalConfigFile` 指向的那个外部配置）。
-- 代码里保留了实验性的文本剪贴板通道（`sendClipboard` / `grabClipboard`），但**实际不可用**：鸿蒙侧 `ohos.permission.READ_PASTEBOARD` 的 `available_level` 是 `system_basic`，普通签名拿不到，写进 `module.json5` 会安装失败（`code:9568289`）。因此**鸿蒙 → Windows 的剪贴板同步需要人工点击系统 PasteButton**，Windows → 鸿蒙的文本粘贴同样受该权限约束。
-- 结论：**本客户端不保证剪贴板同步**。另外，即使权限齐备，若剪贴板里是图像（DIB），穿越仍可能触发上面那个服务端崩溃，所以只应同步文本（format 0 / Text）。
+- **Windows → 鸿蒙的文本剪贴板是可用的**：服务端收到 `CINN` 后会主动下推 `DCLP` 分块，客户端拼装后写入鸿蒙剪贴板，无需任何鸿蒙侧权限（写剪贴板不需要 `READ_PASTEBOARD`，只有读才需要）。
+- **鸿蒙 → Windows 需要人工触发**：读系统剪贴板要 `ohos.permission.READ_PASTEBOARD`，其 `available_level` 是 `system_basic`，普通签名拿不到，写进 `module.json5` 会安装失败（`code:9568289`）。唯一路径是用户点一次系统 `PasteButton`（临时授权）后推送。
+- 因此准确说法是「**单向文本剪贴板 + 反向手动**」，不是「不支持剪贴板」。另外，即使权限齐备，若剪贴板里是图像（DIB），穿越仍可能触发上面那个服务端崩溃，所以只应同步文本（format 0 / Text）。
 
 ---
 
