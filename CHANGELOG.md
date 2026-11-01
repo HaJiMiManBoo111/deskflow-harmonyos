@@ -97,30 +97,7 @@
 
 ---
 
-#### 7. 鼠标注入完全无效（px/vp 坐标系混用）
-
-**文件**：`entry/src/main/ets/background/BackGroundAbility.ets`
-
-**症状**：键盘注入正常（Win 键能唤出 Dock），鼠标注入无任何反应；早期版本日志里刷满
-`injectMouseMove(x,y) failed ret=201`，后期连失败日志都没有。
-
-**根因**：`display.getDefaultDisplaySync()` 的 `width/height` 单位是 **px**，而
-`OH_Input_InjectMouseEventGlobal` 的坐标空间是 **vp**。真机实测
-`densityPixels = 1.9`，`3120 x 2080` px 实际只有 **1642 x 1095** vp。
-旧代码把 px 直接当 vp 上报 `DINF`，服务端下发的坐标全部越界（例如 y=1892 而 vp 上限是 1095），
-注入接口对越界坐标静默失败或返回 201，表现为「鼠标完全不动」。
-
-**修法**：上报前除以 `densityPixels`：
-
-```ts
-const vpW = Math.round(d.width / d.densityPixels);
-const vpH = Math.round(d.height / d.densityPixels);
-```
-
-**验证**：`DINF sent=1 (1642x1095)`（修前是 `3120x2080`）；修复后
-`injectMouseMove` 失败计数为 **0**，鼠标能正常移动/点击。
-
-#### 8. 注入授权自愈把自己救死（3900006）
+#### 7. 注入授权自愈把自己救死（3900006）
 
 **文件**：`entry/src/main/cpp/protocol/deskflow_client.cpp` / `.h`
 

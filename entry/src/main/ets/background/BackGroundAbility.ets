@@ -189,17 +189,11 @@ export default class BackGroundAbility extends UIAbility {
                     autoReconnect: boolean, attempt: number): void {
     try {
       const d = display.getDefaultDisplaySync();
-      // display 上报的 width/height 是物理像素（px），而 OH_Input_InjectMouseEventGlobal
-      // 的坐标空间是 vp（逻辑像素）。必须除以 densityPixels 换算，否则 3120x2080 的 px
-      // 被当成 vp 上报给服务端，注入坐标全部越界（vp 实际只有 1642x1095），
-      // 表现为「键盘注入有效、鼠标注入无效且无任何失败日志」。
-      const vpW = Math.round(d.width / d.densityPixels);
-      const vpH = Math.round(d.height / d.densityPixels);
-      hilog.info(DOMAIN, TAG, 'display: px=%{public}d x %{public}d density=%{public}d -> vp=%{public}d x %{public}d',
-        Math.round(d.width), Math.round(d.height),
-        Math.round(d.densityPixels * 1000), vpW, vpH);
-      const w = vpW;
-      const h = vpH;
+      // 注入接口的坐标空间就是 px，直接用 display 上报的 width/height。
+      // 【勿改成 vp】曾误以为要除以 densityPixels，实测那样会让鼠标只能覆盖
+      // 屏幕左上约一半区域（3120x2080 上报成 1642x1095），全屏拖动失效。
+      const w = Math.round(d.width);
+      const h = Math.round(d.height);
       deskflow.setAutoReconnect(autoReconnect);
       deskflow.setInvertScroll(this.curInvert);
       deskflow.setClipboardSync(this.curClipboard);
