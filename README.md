@@ -139,6 +139,21 @@ hdc shell aa start -a EntryAbility -b com.deskflow.ohospoc
 
 > 选 HAP 时必须选 `-signed.hap`。选到 `-unsigned.hap` 会报 `code:9568320 error: no signature file.`——因为 `unsigned` 在字典序里排在 `signed` 前面，按文件名排序很容易选错。
 
+### 关于 CI
+
+仓库里的 workflow **不编译 HAP**。做了但只做静态检查：
+
+| 检查项 | 说明 |
+|---|---|
+| 必要工程文件是否存在 | 缺 `hvigorfile.ts` / `build-profile.json5` / `module.json5` 等直接失败 |
+| JSON5 配置能否解析 | `build-profile.json5`、`oh-package.json5`、`AppScope/app.json5`、`entry/src/main/module.json5` |
+| 有没有签名材料被提交 | `*.p12` / `*.p7b` / `*.cer` / `*.jks` 与 `keyPassword` / `storePassword` 字段 |
+| 许可证声明是否完好 | `LICENSE` 仍是 GPL-2.0 原文、`NOTICE` 仍含 GPL-2.0 声明 |
+
+原因：编译需要 DevEco Studio 与 HarmonyOS SDK，而 DevEco 的完整发行包要求开发者账号登录后才能下载，无法在 GitHub 托管的公开 runner 上匿名获取（`hvigorw` 与 SDK 都不在 `ubuntu-latest` / `windows-latest` 镜像里）。
+
+**所以这个绿色 ✓ 只代表「工程结构完整、配置可解析、没泄露签名材料」，不代表「HAP 能编出来」。** 真实编译请在本机按 [`docs/BUILD.md`](docs/BUILD.md) 执行。如果你有已装 DevEco 的自建 runner，`build.yml` 末尾有注释掉的可选 job。
+
 ---
 
 ## 文档

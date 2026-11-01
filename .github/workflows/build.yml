@@ -1,11 +1,17 @@
-name: Build HAP
+name: static checks
 
-# 本仓库是 cy745/deskflow-harmonyos 的衍生版本，遵循上游 GPL-2.0 许可。
+# ⚠️ 诚实声明：这个 workflow **不编译 HAP**。
 #
-# 目的：在 CI 上验证工程可编译（hvigorw assembleHap）。
-# 注意：CI 默认不持有任何签名证书，产物为 unsigned HAP；如需 signed HAP，
-# 请按下方 "Signing" 步骤配置 Secrets（CERT / PROFILE / KEYSTORE 等）。
-# unsigned HAP 无法安装到设备（hdc 会报 code:9568320），仅用于验证编译通过。
+# 原因：编译 HarmonyOS 工程需要 DevEco Studio 及其 HarmonyOS SDK，而 DevEco 的
+# 完整发行包要求开发者账号登录后才能下载，无法在 GitHub 托管的公开 runner 上
+# 匿名获取（hvigorw 与 SDK 都不在 ubuntu-latest/windows-latest 镜像里）。
+#
+# 所以这里只跑「无需 SDK 就能验证」的静态检查。绿色 ✓ 的含义是
+# 「工程结构完整、配置可解析、没把签名材料提交进来」，
+# **不代表**「HAP 能编出来」。真实编译请在本机装 DevEco Studio 后执行
+# docs/BUILD.md 里的步骤。
+#
+# 如果你有自建 runner（已装 DevEco Studio），见文件末尾注释里的可选 job。
 
 on:
   push:
@@ -18,99 +24,101 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: assembleHap
+  static-checks:
+    name: project structure and config checks
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 5
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Detect project
-        id: detect
+      - name: required project files exist
         run: |
           set -euo pipefail
-          if [ -f hvigorfile.ts ] && [ -f build-profile.json5 ]; then
-            echo "found=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "found=false" >> "$GITHUB_OUTPUT"
-          fi
+          fail=0
+          for f in hvigorfile.ts build-profile.json5 oh-package.json5 \
+                   AppScope/app.json5 entry/src/main/module.json5 \
+                   entry/src/main/ets/pages/Index.ets \
+                   entry/src/main/ets/background/BackGroundAbility.ets \
+                   entry/src/main/cpp/protocol/deskflow_client.cpp \
+                   LICENSE NOTICE README.md; do
+            if [ -f "$f" ]; then
+              echo "OK   $f"
+            else
+              echo "::error title=missing file::$f"
+              fail=1
+            fi
+          done
+          exit $fail
 
-      # DevEco Studio 的完整发行包需要开发者账号登录，无法在公开 CI 上匿名下载。
-      # 可行做法：自建 runner（label: self-hosted, windows/linux, 已装 DevEco），
-      # 或在 Secrets 里放离线 SDK 归档并用 CACHE 复用。
-      - name: Setup HarmonyOS SDK (availability check)
-        id: sdk
-        env:
-          OHOS_SDK_URL: ${{ secrets.OHOS_SDK_URL }}
-          HDC_PATH: ${{ secrets.HDC_PATH }}
+      - name: json5 configs parse
         run: |
           set -euo pipefail
-          if [ -n "${OHOS_SDK_URL:-}" ]; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=SDK 未配置::未提供 OHOS_SDK_URL，跳过构建。请配置 SDK 或使用自建 runner。"
-          fi
+          npm i -g json5 --silent >/dev/null 2>&1
+          GLOBAL_NM="$(npm root -g)"
+          for f in build-profile.json5 oh-package.json5 AppScope/app.json5 entry/src/main/module.json5; do
+            F="$f" GLOBAL_NM="$GLOBAL_NM" node -e '
+              const fs = require("fs");
+              const json5 = require(process.env.GLOBAL_NM + "/json5");
+              const o = json5.parse(fs.readFileSync(process.env.F, "utf8"));
+              if (!o || typeof o !== "object") {
+                console.error("::error::" + process.env.F + " did not parse to an object");
+                process.exit(1);
+              }
+              console.log("OK   " + process.env.F + "  keys=" + Object.keys(o).join(","));
+            '
+          done
 
-      - name: Download SDK archive
-        if: steps.sdk.outputs.available == 'true'
-        env:
-          OHOS_SDK_URL: ${{ secrets.OHOS_SDK_URL }}
+      - name: no signing material committed
         run: |
           set -euo pipefail
-          mkdir -p "$HOME/ohos-sdk"
-          curl -fsSL "$OHOS_SDK_URL" -o /tmp/ohos-sdk.tar.gz
-          tar -xzf /tmp/ohos-sdk.tar.gz -C "$HOME/ohos-sdk" --strip-components=1 || true
-          echo "OHOS_SDK_HOME=$HOME/ohos-sdk" >> "$GITHUB_ENV"
-
-      - name: Install dependencies
-        if: steps.sdk.outputs.available == 'true'
-        run: |
-          set -euo pipefail
-          if command -v ohpm >/dev/null 2>&1; then
-            ohpm install --all || ohpm install
-          else
-            echo "::warning title=ohpm 缺失::未找到 ohpm，跳过依赖安装"
-          fi
-
-      - name: Build HAP
-        if: steps.sdk.outputs.available == 'true' && steps.detect.outputs.found == 'true'
-        run: |
-          set -euo pipefail
-          if command -v hvigorw >/dev/null 2>&1; then
-            hvigorw --no-daemon assembleHap --mode module -p product=default
-          else
-            echo "::error title=hvigorw 缺失::未找到 hvigorw，请使用已安装 DevEco Studio 的 runner"
+          bad=$(find . -path ./.git -prune -o -type f \
+                 \( -name '*.p12' -o -name '*.p7b' -o -name '*.cer' -o -name '*.jks' \) -print || true)
+          if [ -n "$bad" ]; then
+            echo "::error title=signing material committed::$bad"
             exit 1
           fi
+          if grep -qE '"(keyPassword|storePassword)"[[:space:]]*:' build-profile.json5; then
+            echo "::error title=password field in build-profile.json5::this repo must not contain signingConfigs"
+            exit 1
+          fi
+          echo "OK   no signing material"
 
-      - name: List artifacts
-        if: steps.sdk.outputs.available == 'true'
+      - name: license intact
         run: |
-          find . -name "*.hap" -type f -print0 | xargs -0 -r ls -l
-
-      - name: Upload unsigned HAP
-        if: steps.sdk.outputs.available == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: hap-unsigned
-          path: |
-            **/entry-default-unsigned.hap
-            **/entry-default-signed.hap
-          if-no-files-found: warn
-          retention-days: 7
+          set -euo pipefail
+          head -3 LICENSE | grep -qi 'GNU GENERAL PUBLIC LICENSE' \
+            || { echo "::error title=LICENSE is not the GPL-2.0 text"; exit 1; }
+          grep -qi 'GPL-2.0' NOTICE \
+            || { echo "::error title=NOTICE lacks upstream license notice"; exit 1; }
+          echo "OK   GPL-2.0 notices present"
 
       - name: Summary
         if: always()
         run: |
           {
-            echo "## Build HAP"
+            echo "## Static checks (HAP is NOT compiled)"
             echo ""
-            echo "- 上游：cy745/deskflow-harmonyos（GPL-2.0）"
-            echo "- SDK 已配置：${{ steps.sdk.outputs.available }}"
-            echo "- 工程识别：${{ steps.detect.outputs.found }}"
+            echo "This workflow only checks project structure, config parseability, signing-material leakage and license notices."
             echo ""
-            echo "> CI 产物未签名，安装需 signed HAP（见 docs/BUILD.md）。"
+            echo "**HAP is not compiled**: the CI environment has no DevEco Studio and no HarmonyOS SDK."
+            echo "See \`docs/BUILD.md\` for the real build steps."
           } >> "$GITHUB_STEP_SUMMARY"
+
+# ---------------------------------------------------------------------------
+# 可选：如果你有已装 DevEco Studio 的自建 runner，把下面这段取消注释即可。
+#
+#  build-hap:
+#    name: assembleHap (needs a self-hosted runner)
+#    runs-on: [self-hosted, windows, x64, harmonyos]
+#    needs: static-checks
+#    steps:
+#      - uses: actions/checkout@v4
+#      - run: hvigorw --no-daemon assembleHap --mode module -p product=default
+#      - uses: actions/upload-artifact@v4
+#        with:
+#          name: hap-unsigned
+#          path: '**/entry-default-unsigned.hap'
+#          if-no-files-found: error
+# ---------------------------------------------------------------------------
