@@ -16,7 +16,7 @@
 
 ## 这个 fork 解决了什么
 
-上游能跑通「第一次连上」，但在**换地址、重连、进程重启**这些真实使用场景里会失败。本仓库针对五处具体缺陷做了修复：
+上游能跑通「第一次连上」，但在**换地址、重连、进程重启**这些真实使用场景里会失败。本仓库针对六处具体缺陷做了修复：
 
 | # | 问题（上游行为） | 本仓库的修复 |
 |---|---|---|
@@ -25,6 +25,7 @@
 | 3 | 原生层切换地址时会返回 `"previous client is still stopping, please retry in a moment"`（`ConnectDeskflow` 会先 `stop()` 并最多等 1.5 秒），上游把它当失败直接丢弃 | 新增 `doConnect(...)`：检测到返回串含 `still stopping` 就 600 ms 后递归重试，最多 10 次；**每次重试前校验 `curHost`/`curPort` 未被改过**，避免旧请求覆盖新目标 |
 | 4 | Windows 侧 DHCP 换 IP（如 `10.45.231.220` → `10.45.36.77`）后，鸿蒙端永远连着旧地址 | 新增 UDP 信标监听：`ServerDiscovery.ets` 增加 `DISCOVERY_PORT_BG = 47001` 与可指定端口的 `startServerDiscovery(onFound, listenPort)`；`BackGroundAbility.ets` 新增 `watchBeacon()`，收到地址变化即重连。**主界面没开也能自愈**（纯载体冷启动同样生效） |
 | 5 | 重连后鼠标能穿越但光标不动，hilog 满屏 `Inject pointer event failed, ret:201`（`201` = `INPUT_PERMISSION_DENIED`）：`OH_Input_QueryAuthorizedStatus` 在进程被 `aa force-stop` 后仍返回 `AUTHORIZING(1)`，上游遇到 AUTHORIZING 就跳过申请，永远等不到授权回调 | AUTHORIZING 分支改为 `CancelInjection` → 重查状态 → 重新 `RequestInjection`；新增 `recoverInjectionPermission()`（限流：间隔 ≥5000 ms、总计 ≤8 次，注入成功即清零），四处注入失败分支全部接上自愈 |
+| 6 | 剪贴板功能绑在界面上：承载进程收到 `DCLP` 只广播事件，真正写系统剪贴板的代码在主窗口里，**界面一关文本就被静默丢弃** | 承载进程自己调 `pasteboard.getSystemPasteboard().setDataSync(...)` 写剪贴板，之后仍广播事件供界面显示；主界面不开也能同步（写剪贴板不需要 `READ_PASTEBOARD`） |
 
 技术细节、复现条件与代码位置见 [`docs/OUR-CHANGES.md`](docs/OUR-CHANGES.md)。
 

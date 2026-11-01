@@ -6,7 +6,8 @@
 ## 0. 一句话总结
 
 上游能在**理想路径**上跑通第一次连接；我们在真实使用中遇到的失败都集中在**连接生命周期**和**权限生命周期**两处。
-本 fork 的 5 项改动全部围绕这两处，没有新增任何上游没有的功能（尤其**没有增加剪贴板同步**）。
+本 fork 的 6 项改动全部围绕这两处。第 1–5 项是修复，第 6 项是把已有的剪贴板通道从 UI 层移进承载进程
+（通道本身是上游就有的 `DCLP`，我们没新增协议）。
 
 | # | 改动 | 文件 | 涉及符号 |
 |---|---|---|---|
@@ -15,6 +16,7 @@
 | 3 | 连接重试，避开旧 worker 未退完 | `entry/src/main/ets/background/BackGroundAbility.ets` | `doConnect()` |
 | 4 | 服务端换 IP 自愈（UDP 信标） | `entry/src/main/ets/net/ServerDiscovery.ets`、`entry/src/main/ets/background/BackGroundAbility.ets` | `DISCOVERY_PORT_BG`、`startServerDiscovery()`、`watchBeacon()` |
 | 5 | 注入权限卡死自愈 | `entry/src/main/cpp/protocol/deskflow_client.cpp` | `recoverInjectionPermission()`、四处 `inject*` 失败分支、握手后授权段 |
+| 6 | 剪贴板不再依赖界面存活 | `entry/src/main/ets/background/BackGroundAbility.ets` | `onClipboardData()` 回调内的 `pasteboard.setDataSync()` |
 
 架构前提：连接**不由主界面持有**，而由独立进程里的 `BackGroundAbility` 承载（`startAbility` 时 `processMode: 1` = `NEW_PROCESS_ATTACH_TO_PARENT`、`startupVisibility: 0` = `STARTUP_HIDE`），这样托盘/隐藏时不会被冻结。主界面与承载进程之间通过 `commonEvent` 交换状态。理解了这一点，下面 4 个 ArkTS 改动才说得通。
 
@@ -349,17 +351,68 @@ bool DeskflowClient::recoverInjectionPermission()
 
 ---
 
-## 附：关于剪贴板（澄清，非改动）
+## 6. 剪贴板：从界面移进承载进程
 
-上游**没有剪贴板同步**，本 fork **也没有新增**。中间曾尝试过原生文本通道，结论是**不可用**，原因如下，供后续参考：
+### 症状
 
-- 鸿蒙读取系统剪贴板需要 `ohos.permission.READ_PASTEBOARD`。
-- 该权限是 `user_grant` 且 `available_level = system_basic` —— **普通第三方签名拿不到**。
-- 把它写进 `entry/src/main/module.json5` 的 `requestPermissions` 会导致**安装失败**：`code:9568289`。
-- 唯一可行路径是用户**人工点击系统 `PasteButton`**（点击后获得临时授权窗口），才能读到剪贴板明文。
-  即：鸿蒙 → Windows 方向**必须人工点一次按钮**，不能静默同步。
+主窗口开着时，Windows 复制文本能在鸿蒙上直接粘贴；把窗口收进托盘或退出界面后，剪贴板就不再跟随，且没有任何报错。
 
-因此本仓库的定位是**键鼠共享客户端**，不含剪贴板同步能力。请勿在文档或宣传中声称支持剪贴板同步。
+### 根因
+
+上游（以及本 fork 修此问题之前）的剪贴板链路把「接收」和「写入系统剪贴板」拆在了两个进程层级：
+
+- `entry/src/main/ets/background/BackGroundAbility.ets` 的 `onClipboardData` 回调只做一件事：`publish(BGEVT_CLIP)` 广播事件。
+- 真正调用 `pasteboard.createData(...)` / `getSystemPasteboard().setDataSync(...)` 的 `setSystemClipboard()` 写在
+  `entry/src/main/ets/pages/Index.ets` 里。
+
+于是**界面没有运行时实例，就没人消费这个广播**，收到的文本被静默丢弃。
+剪贴板本质上是连接态能力（连接在承载进程里），却被绑到了 UI 生命周期上。
+
+### 本 fork 的修法
+
+`BackGroundAbility.ets` 自己写剪贴板，不再依赖界面：
+
+```ts
+import { pasteboard } from '@kit.BasicServicesKit';
+
+deskflow.onClipboardData((text: string) => {
+  if (this.curClipboard && text.length > 0) {
+    try {
+      const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+      pasteboard.getSystemPasteboard().setDataSync(data);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'set system clipboard fail: %{public}s', JSON.stringify(e));
+    }
+  }
+  this.publishStatus(BGEVT_CLIP, text);   // 仍广播，供界面显示
+});
+```
+
+`this.curClipboard` 由 `BGEVT_CLIP_SYNC` 事件维护，与界面里的开关联动。
+
+### 为什么这里不需要 `READ_PASTEBOARD`
+
+写入系统剪贴板与读取是两个不同权限：`setDataSync` 属**写**，普通应用可直接调；
+只有**读**（`getDataSync`）才需要 `ohos.permission.READ_PASTEBOARD`。
+
+### 方向性结论
+
+| 方向 | 是否自动 | 机制 |
+|---|---|---|
+| Windows → 鸿蒙 | **自动** | 服务端在 `CINN` 后主动下推 `DCLP`（分块 `mark=1 Start(ASCII 长度) → 2 Data → 3 End`，见 `deskflow_client.cpp:301-345`），客户端拼装后写入鸿蒙剪贴板 |
+| 鸿蒙 → Windows | **不可自动** | 读取鸿蒙剪贴板需要 `ohos.permission.READ_PASTEBOARD`（`user_grant` + `available_level = system_basic`），普通签名拿不到；写进 `module.json5` 会 `code:9568289` 安装失败。唯一路径是用户人工点一次系统 `PasteButton` 拿临时授权 |
+
+只支持纯文本。图片、文件不走剪贴板（`DFTR` / `DDRG` 消息在客户端是空实现）。
+
+### 复现与验证
+
+1. 连上之后关闭主窗口（承载进程仍在）。
+2. Windows 侧复制一段中文文本。
+3. 鸿蒙侧在任意输入框长按 → 粘贴，文本应出现。
+4. `hilog -T DeskflowPoC` 应能看到 `DCLP` 进、`set system clipboard` 无 error。
+
+> 注：**锁屏状态下注入与剪贴板都不生效**，验证前必须解锁屏幕。
+
 
 ---
 

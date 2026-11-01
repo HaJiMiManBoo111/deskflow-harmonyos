@@ -9,6 +9,7 @@
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { commonEventManager } from '@kit.BasicServicesKit';
 import { BusinessError } from '@kit.BasicServicesKit';
+import { pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { display } from '@kit.ArkUI';
 import { preferences } from '@kit.ArkData';
@@ -311,8 +312,20 @@ export default class BackGroundAbility extends UIAbility {
     }
     try {
       deskflow.onClipboardData((event: deskflow.ValueChangeEvent) => {
-        hilog.info(DOMAIN, TAG, 'onClipboardData recv len=%{public}d, publish BGEVT_CLIP', (event.value ?? '').length);
-        const msg: commonEventManager.CommonEventData = { event: BGEVT_CLIP, data: event.value };
+        const text = event.value ?? '';
+        hilog.info(DOMAIN, TAG, 'onClipboardData recv len=%{public}d, publish BGEVT_CLIP', text.length);
+        // 直接写系统剪贴板：写不需要 READ_PASTEBOARD，只有读需要。
+        // 这里必须自己写一份，不能只依赖主界面 —— 界面关掉后没人收 BGEVT_CLIP，
+        // Windows → 鸿蒙方向的剪贴板就断了。
+        if (this.curClipboard && text.length > 0) {
+          try {
+            const data = pasteboard.createData(pasteboard.MIMETYPE_TEXT_PLAIN, text);
+            pasteboard.getSystemPasteboard().setDataSync(data);
+          } catch (e) {
+            hilog.warn(DOMAIN, TAG, 'set system clipboard fail: %{public}s', JSON.stringify(e));
+          }
+        }
+        const msg: commonEventManager.CommonEventData = { event: BGEVT_CLIP, data: text };
         this.publish(msg);
       });
     } catch (e) {

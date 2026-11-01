@@ -64,24 +64,38 @@
     限流「两次间隔 ≥ **5000 ms**、总计 ≤ **8 次**」，注入成功时清零计数恢复额度。
   - `injectMouseMove` / `injectMouseButton` / `injectMouseWheel` / `injectKeyEvent` 四处失败分支全部接上该自愈逻辑。
 
+#### 6. Windows → 鸿蒙剪贴板：界面关掉后就断了
+- **文件**：`entry/src/main/ets/background/BackGroundAbility.ets` — `wireEvents()` 里的 `onClipboardData` 回调
+- **症状**：主窗口开着时，Windows 复制文本能在鸿蒙上粘贴；把窗口收进托盘或退出界面后，剪贴板就不再跟随。
+- **根因**：承载进程（`BackGroundAbility`）收到 `DCLP` 后只 `publish(BGEVT_CLIP)` 广播事件，
+  真正写系统剪贴板的动作在 `Index.ets` 的 `setSystemClipboard()` 里 —— **界面没有运行实例就没人消费这个事件**，
+  文本被静默丢弃。剪贴板属于连接态能力，却被绑在 UI 生命周期上。
+- **修复**：承载进程自己直接写剪贴板（`import { pasteboard } from '@kit.BasicServicesKit'`），
+  在 `curClipboard` 开启且文本非空时 `pasteboard.getSystemPasteboard().setDataSync(...)`，之后再照常广播事件供界面显示。
+  写剪贴板不需要 `READ_PASTEBOARD`，只有读才需要。
+
 ### 文档
 
 - 覆盖重写 `README.md`：顶部标注上游来源与 GPL-2.0 继承关系，补充本 fork 改动摘要、已验证环境、能力与限制。
 - 新增 `docs/OUR-CHANGES.md`：改动详解（症状 / 根因 / 修法 / 代码位置 / 复现与验证）。
 - 新增 `docs/BUILD.md`：鸿蒙侧构建、签名、装机、启动与常见坑。
-- 新增 `.github/workflows/build.yml`：DevEco 命令行构建 HAP 的 CI 工作流。
+- 新增 `.github/workflows/build.yml`：静态检查（工程结构、JSON5 可解析、无签名材料、许可证完好）。
+  它**不编译 HAP** —— DevEco Studio 与 HarmonyOS SDK 无法在 GitHub 托管 runner 上匿名获取。
 - 追加 `NOTICE`：声明本仓库相对上游的修改（GPL-2.0 §2(a) 要求）。
 - 补齐 `.gitignore`：新增 `entry/build/`、`.hvigor/`、`entry/oh_modules/`、`oh_modules/`、`.idea/`、`*.hap`、`entry/.preview/`、`entry/.cxx/`。
 
 ### 未改动
 
-- `LICENSE`、`CONTRIBUTING.md` 与全部源码 / 配置（`entry/src/**`、`AppScope/**`、`build-profile.json5`、`oh-package.json5`、`hvigorfile.ts`）保持上游原样。
+- `LICENSE`（GPL-2.0 原文）与上游 `CONTRIBUTING.md` 未改。
+- 除上述 6 项涉及的四个文件（`Index.ets`、`BackGroundAbility.ets`、`ServerDiscovery.ets`、`deskflow_client.cpp`）外，
+  其余源码与配置（`AppScope/**`、`build-profile.json5`、`oh-package.json5`、`hvigorfile.ts`、`entry/src/main/cpp` 其余部分）保持上游原样。
 
 ### 已知限制
 
-- **无剪贴板同步。** 鸿蒙 → Windows 方向需要人工点击系统 `PasteButton`；
-  `ohos.permission.READ_PASTEBOARD` 为 `user_grant` 且 `available_level = system_basic`，普通签名无法获取，
-  写进 `module.json5` 会导致安装失败 `code:9568289`。
+- **剪贴板只通了单向，且只支持纯文本。** Windows → 鸿蒙 自动生效（`DCLP` 分块 `Start / Data / End`）；
+  鸿蒙 → Windows 需要人工点击系统 `PasteButton`，因为 `ohos.permission.READ_PASTEBOARD` 为 `user_grant`
+  且 `available_level = system_basic`，普通签名无法获取，写进 `module.json5` 会导致安装失败 `code:9568289`。
+  图片与文件不走剪贴板。
 - **注入授权弹窗在锁屏状态下弹不出来**，必须解锁屏幕才会弹（锁屏时 hilog 只会看到 `AUTHORIZING` 卡住）。
 - 仅支持 **PC / 2in1** 设备形态，非 2in1 调注入接口返回 `801`。
 - **UDP 广播在 AP 客户端隔离（校园网 / 企业网）下收不到**，信标必须由服务端向已知设备 IP **单播**。
