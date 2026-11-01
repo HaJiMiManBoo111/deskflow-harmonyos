@@ -6,7 +6,7 @@
 ## 0. 一句话总结
 
 上游能在**理想路径**上跑通第一次连接；我们在真实使用中遇到的失败都集中在**连接生命周期**和**权限生命周期**两处。
-本 fork 的 6 项改动全部围绕这两处。第 1–5 项是修复，第 6 项是把已有的剪贴板通道从 UI 层移进承载进程
+本 fork 的 8 项改动全部围绕这两处。第 1–5、7、8 项是修复，第 6 项是把已有的剪贴板通道从 UI 层移进承载进程
 （通道本身是上游就有的 `DCLP`，我们没新增协议）。
 
 | # | 改动 | 文件 | 涉及符号 |
@@ -440,3 +440,110 @@ deskflow.onClipboardData((text: string) => {
 
 **本仓库是 [`cy745/deskflow-harmonyos`](https://github.com/cy745/deskflow-harmonyos) 的衍生版本，遵循上游 GPL-2.0 许可。**
 上述所有改动同样以 GPL-2.0 发布。根目录 [`LICENSE`](../LICENSE) 为 GPL v2 全文，未作改动。
+
+## 7. 鼠标注入完全无效：px / vp 坐标系混用
+
+**文件**：`entry/src/main/ets/background/BackGroundAbility.ets`（`doConnect`）
+
+### 症状
+
+键盘注入正常（按 Win 键能唤出 Dock），**鼠标注入完全没反应**。早期版本 hilog 刷满
+`injectMouseMove(x,y) failed ret=201`；后期连失败日志都不出现，只有 `CINN` 到达。
+
+### 根因
+
+`display.getDefaultDisplaySync()` 的 `width` / `height` 单位是 **px**，
+而 `OH_Input_InjectMouseEventGlobal` 的坐标空间是 **vp**（逻辑像素）。
+
+真机（HUAWEI MateBook Pro，3120×2080 屏）：
+
+```
+display: px=3120 x 2080  densityPixels=1.9  densityDPI=304
+→ vp 实际只有 1642 x 1095
+```
+
+旧代码把 `3120 x 2080` 当成 vp 上报 `DINF`。服务端按这个「屏幕尺寸」算坐标，
+下发的 y 可能高达 1892，而 vp 上限只有 1095 —— 越界坐标注入要么静默失败、
+要么返回 201，表现为鼠标完全不动。
+
+### 修法
+
+```ts
+const d = display.getDefaultDisplaySync();
+const vpW = Math.round(d.width / d.densityPixels);
+const vpH = Math.round(d.height / d.densityPixels);
+const ret: string = deskflow.connectDeskflow(host, port, screen, vpW, vpH);
+```
+
+### 复现与验证
+
+```bash
+hdc shell hilog -x | grep 'DINF'
+# 修前: QINF -> DINF sent=1 (3120x2080)
+# 修后: QINF -> DINF sent=1 (1642x1095)
+hdc shell hilog -x | grep -c 'injectMouseMove.*failed'
+# 修后为 0
+```
+
+> 注意：`docs/INPUT_INJECTION.md` 第 2 节说「不要乘 densityPixels，直接使用 vp 坐标」——
+> 那句话的本意是「不要把 vp 再乘一次变成 px」，但 `d.width` 本身就是 px，必须先除。
+> 上游作者当时没在 2in1 上验证到这一点。
+
+## 8. 注入授权自愈把自己救死（3900006）
+
+**文件**：`entry/src/main/cpp/protocol/deskflow_client.cpp`（`recoverInjectionPermission`）、
+`entry/src/main/cpp/protocol/deskflow_client.h`
+
+### 症状
+
+一次瞬时 201 之后，后续所有鼠标注入**永久失败**。日志：
+
+```
+injection denied(201), recovering permission (attempt 1)
+injection auth callback: UNAUTHORIZED(0)
+after cancel: queryRet=0 status=0
+re-request injection auth after cancel, ret=3900006   ← Repeated request
+```
+
+### 根因
+
+旧实现无条件 `OH_Input_CancelInjection()` 再 `OH_Input_RequestInjection()`。
+`CancelInjection` 会把已有授权**彻底撤销**，撤了立刻重申请会被系统判成
+「重复请求」返回 `INPUT_INJECTION_OPERATION_FREQUENT (3900006)`，
+而 3900006 期间注入一直是 201 —— 一次瞬时失败被放大成永久失效。
+
+### 修法
+
+先查状态再决定动作：
+
+```cpp
+Input_InjectionStatus st = UNAUTHORIZED;
+OH_Input_QueryAuthorizedStatus(&st);
+if (st == AUTHORIZED) {
+    // 系统说已授权却仍 201：授权挂在别的会话上，撤销无意义
+    return false;
+}
+if (st == AUTHORIZING) {
+    if (m_authPendingSinceMs == 0) { m_authPendingSinceMs = now; return false; }
+    if (now - m_authPendingSinceMs < 8000) return false;   // 授权框真在屏上，必须等
+    // 超过 8s 无回调 = 系统侧假 AUTHORIZING，强制复位
+    m_authPendingSinceMs = 0;
+}
+OH_Input_CancelInjection();
+OH_Input_RequestInjection(OnInjectAuthCallback);
+```
+
+限流从「5 s / 8 次」放宽到「10 s / 20 次」。
+
+### 复现与验证
+
+```bash
+hdc shell hilog -x | grep -E 'recover:|auth callback'
+# recover: status=AUTHORIZING, start waiting (no cancel yet)
+# recover: AUTHORIZING stuck 21089ms with no callback, cancel and re-request
+# re-request injection auth after cancel: prev=1 now=0 ret=0
+# injection auth callback: AUTHORIZED(2)
+```
+
+之后 `grep -c 'injectMouseMove.*failed'` 为 0。
+

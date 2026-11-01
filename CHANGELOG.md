@@ -10,12 +10,6 @@
 
 ---
 
-## [Unreleased] — fork 分支
-
-基于上游 `cy745/deskflow-harmonyos`（GPL-2.0）。以下为本 fork 的全部改动。
-
-### 修复
-
 #### 1. 送新地址反而把连接弄死
 - **文件**：`entry/src/main/ets/pages/Index.ets` — `startBg(want)`
 - **症状**：鸿蒙端换服务端地址后，连接彻底消失且不再有人重建；hilog 里出现 `16000068`。
@@ -102,6 +96,59 @@
 - 不要用 TCP 探测判断服务端可达性：Deskflow 服务端同一时刻只接受一个客户端，探测会挤断在用连接。
 
 ---
+
+#### 7. 鼠标注入完全无效（px/vp 坐标系混用）
+
+**文件**：`entry/src/main/ets/background/BackGroundAbility.ets`
+
+**症状**：键盘注入正常（Win 键能唤出 Dock），鼠标注入无任何反应；早期版本日志里刷满
+`injectMouseMove(x,y) failed ret=201`，后期连失败日志都没有。
+
+**根因**：`display.getDefaultDisplaySync()` 的 `width/height` 单位是 **px**，而
+`OH_Input_InjectMouseEventGlobal` 的坐标空间是 **vp**。真机实测
+`densityPixels = 1.9`，`3120 x 2080` px 实际只有 **1642 x 1095** vp。
+旧代码把 px 直接当 vp 上报 `DINF`，服务端下发的坐标全部越界（例如 y=1892 而 vp 上限是 1095），
+注入接口对越界坐标静默失败或返回 201，表现为「鼠标完全不动」。
+
+**修法**：上报前除以 `densityPixels`：
+
+```ts
+const vpW = Math.round(d.width / d.densityPixels);
+const vpH = Math.round(d.height / d.densityPixels);
+```
+
+**验证**：`DINF sent=1 (1642x1095)`（修前是 `3120x2080`）；修复后
+`injectMouseMove` 失败计数为 **0**，鼠标能正常移动/点击。
+
+#### 8. 注入授权自愈把自己救死（3900006）
+
+**文件**：`entry/src/main/cpp/protocol/deskflow_client.cpp` / `.h`
+
+**症状**：一次瞬时 201 之后，后续所有鼠标注入永久失败；日志出现
+`re-request injection auth after cancel, ret=3900006`。
+
+**根因**：旧 `recoverInjectionPermission()` 无条件 `OH_Input_CancelInjection()` 再
+`OH_Input_RequestInjection()`。`CancelInjection` 会把已有授权彻底撤销，撤了立刻重申请
+会被系统判成「重复请求」返回 `INPUT_INJECTION_OPERATION_FREQUENT (3900006)`，
+而 3900006 期间注入一直是 201 —— 一次瞬时失败被放大成永久失效。
+
+**修法**：先查状态再决定动作。
+
+- `AUTHORIZED`：不撤销（撤销无意义，反而掉进 3900006），直接等下一轮；
+- `AUTHORIZING`：先等 8 秒。授权框真的在屏上时必须等（Cancel 会关掉那个框）；
+  超过 8 秒仍无回调，判定为系统侧残留的**假 AUTHORIZING**，强制复位重申请；
+- 限流从「5s / 8 次」放宽到「10s / 20 次」。
+
+**验证**：真机日志 `recover: status=AUTHORIZING, start waiting (no cancel yet)` →
+`AUTHORIZING stuck 21089ms with no callback, cancel and re-request` →
+`re-request ... prev=1 now=0 ret=0` → `injection auth callback: AUTHORIZED(2)`，
+此后注入失败计数归零。
+
+## [Unreleased] — fork 分支
+
+基于上游 `cy745/deskflow-harmonyos`（GPL-2.0）。以下为本 fork 的全部改动。
+
+### 修复
 
 ## 上游历史
 

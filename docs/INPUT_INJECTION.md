@@ -65,16 +65,21 @@ Input_Result ret = OH_Input_RequestInjection(OnInjectionAuthorizeCallback);
 
 ### 2.3 解决方案
 
-不要乘 `densityPixels`，直接使用 vp 坐标：
+**必须除以 `densityPixels` 换算成 vp**，不能把 `d.width` 直接当 vp 用：
 
 ```ts
 const d = display.getDefaultDisplaySync();
-const w = Math.round(d.width);   // 屏幕宽（注入用 vp）
-const h = Math.round(d.height);  // 屏幕高
-this.result = testNapi.connectDeskflow(host, port, name, w, h);
+const vpW = Math.round(d.width / d.densityPixels);   // 注入用 vp
+const vpH = Math.round(d.height / d.densityPixels);
+this.result = testNapi.connectDeskflow(host, port, name, vpW, vpH);
 ```
 
-在协议侧，`DINF` 上报屏幕尺寸、`DMMV` 的绝对坐标、以及 `CINN` 移交时的指针坐标，**全部按 vp 处理**，保持与注入空间一致。ETS 侧计算目标点（如屏幕中心）也用 `d.width / 2` 而非物理像素。
+在协议侧，`DINF` 上报屏幕尺寸、`DMMV` 的绝对坐标、以及 `CINN` 移交时的指针坐标，**全部按 vp 处理**，保持与注入空间一致。ETS 侧计算目标点（如屏幕中心）也用 `vpW / 2` 而非物理像素。
+
+> ⚠️ **历史勘误**：本节早期版本写的是「不要乘 `densityPixels`，直接使用 `d.width`」——
+> 那句话把 `d.width`（px）误当成了 vp，导致 `DINF` 上报 3120×2080（真实 vp 只有 1642×1095），
+> 服务端下发的坐标全部越界，鼠标注入完全无效。真机 `densityPixels = 1.9`。
+> 详见 `CHANGELOG.md` 第 7 项与 `docs/OUR-CHANGES.md` 第 7 节。
 
 ---
 
