@@ -76,7 +76,7 @@
 
 ## 与 Windows 端配合使用
 
-> **要现成的安装包？** 到 [Releases](https://github.com/HaJiMiManBoo111/deskflow-harmonyos/releases) 下载 `deskflow-harmonyos-v0.1.1-unsigned.zip`。里面是**未签名**的 `.hap` + 签名安装说明（`START-HERE.txt`）。发未签名版是因为签名 hap 会嵌入打包者的证书与绑定设备 UDID 的调试 profile，既泄露他人设备标识又装不到你机器上 —— 用自己的证书签一次约一分钟。
+> **要现成的安装包？** 到 [Releases](https://github.com/HaJiMiManBoo111/deskflow-harmonyos/releases) 下载 `deskflow-harmonyos-v0.1.2-unsigned.zip`。里面是**未签名**的 `.hap` + 签名安装说明（`START-HERE.txt`）。发未签名版是因为签名 hap 会嵌入打包者的证书与绑定设备 UDID 的调试 profile，既泄露他人设备标识又装不到你机器上 —— 用自己的证书签一次约一分钟。
 
 ### 1. 服务端（Windows）
 
@@ -122,6 +122,41 @@ Windows 侧 DHCP 换 IP 后，鸿蒙端存着旧地址就永远连不上。本 f
 
 > **实测教训：不要用 TCP 探测（probeTcp）判断服务端是否可达。**
 > Deskflow 服务端同一时刻只接受一个客户端，探测连接会占掉槽位，把正在使用的连接挤断；而且探测失败时的 `unreachable` 日志常与真实状态相反。**直接连即可**——原生层自带 5 秒连接超时与重连退避。
+
+---
+
+## 同一网段却连不上：AP 客户端隔离，改走 USB 隧道
+
+**症状**：hilog 里每 3 秒一轮 `connecting to <ip>:24800` → `connect failed`。耗时约 **3.07 s** 是**超时**而不是拒绝；Windows 侧 `netstat -ano | findstr 24800` 只有 `LISTENING`，始终没有 `ESTABLISHED`。地址、端口、屏幕名都填对了。
+
+**根因**：两侧 IP 属于同一 `/16`，Wi-Fi 也正常（都能 ping 网关），但**二层不通** —— ARP 互相解析不出来。校园网 / 企业网的 AP 客户端隔离就长这样：能到网关，到不了同网段的另一台机器。SYN 根本没到 Windows，所以与防火墙、Deskflow 配置无关。
+
+两步确认（隔离时各会得到下面的结果）：
+
+```powershell
+# Windows 侧：邻居状态会是 Incomplete
+Get-NetNeighbor -InterfaceAlias 'WLAN 6' -AddressFamily IPv4 |
+  Where-Object IPAddress -eq "鸿蒙设备IP" | Select-Object IPAddress,State
+```
+
+```bash
+# 鸿蒙侧：flags 会是 0x0（未解析）
+hdc shell "cat /proc/net/arp | grep 'Windows IP'"
+```
+
+### 解决：USB 反向端口转发
+
+```cmd
+scripts\usb-tunnel.cmd
+```
+
+脚本做四件事：找 `hdc.exe`（`LINGXI_HDC` 环境变量 / DevEco 默认路径 / PATH）→ 取第一台在线设备 → `hdc rport tcp:24800 tcp:24800` → `aa start` 把客户端指向 `127.0.0.1:24800`。
+
+之后客户端走 USB 线到 Windows 的 24800，完全不经过 Wi-Fi。**拔线、`hdc kill`、设备重启后隧道都会消失，重跑一次脚本即可** —— 客户端此时已把 host 持久化为 `127.0.0.1`，隧道没了它会一直重连失败，不会自己回到 Wi-Fi 地址。
+
+不想插线，就把两端放进**没有客户端隔离**的网络：Windows「移动热点」让设备连进来，或让 Windows 连设备自己的热点（设备侧 `192.168.43.x`），再把客户端地址改成对应的 IP。
+
+> 防火墙可以这样排除：Deskflow 安装时会建 `Deskflow Server` / `Deskflow Client` 两条入站允许规则（全配置文件），程序路径指向 `C:\Program Files\Deskflow\deskflow-core.exe`。若规则缺失——`netsh advfirewall firewall show rule name="Deskflow Server"` 查不到——症状会变成 **ARP 正常但连接仍超时**。
 
 ---
 
